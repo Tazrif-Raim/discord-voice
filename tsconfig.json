@@ -10,7 +10,8 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "bundler"
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0"
   },
   "include": ["**/*.ts"],
   "exclude": ["node_modules", "dist"]

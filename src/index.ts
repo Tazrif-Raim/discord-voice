@@ -19,6 +19,8 @@ import {
   StreamType,
 } from "@discordjs/voice";
 import { createVoicePipeline } from "./audio/createVoicePipeline";
+import { getGeminiSession, destroyGeminiSession, GeminiLiveSession } from "./gemini/GeminiLiveSession";
+import { Readable } from "stream";
 
 // Create Discord client with necessary intents
 const client = new Client({
@@ -29,11 +31,17 @@ const client = new Client({
   ],
 });
 
+// Conversation state machine
+type ConversationState = 'IDLE' | 'LISTENING' | 'WAITING_FOR_RESPONSE' | 'PLAYING';
+
 // Store active connections and players
 const connections = new Map<string, VoiceConnection>();
 const players = new Map<string, AudioPlayer>();
+const geminiSessions = new Map<string, GeminiLiveSession>(); // guildId -> GeminiLiveSession
 const activeSpeakers = new Map<string, string>(); // guildId -> userId
 const activeStreams = new Map<string, any>(); // guildId -> opusStream subscription
+const activePipelines = new Map<string, Readable>(); // guildId -> pipeline stream
+const conversationStates = new Map<string, ConversationState>(); // guildId -> state
 
 // Bot ready event
 client.once("ready", async () => {
@@ -90,6 +98,8 @@ async function handleJoinCommand(interaction: CommandInteraction) {
       adapterCreator: voiceChannel.guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: false,
+      debug: true, // Enable debug logging for voice connection
+      daveEncryption: false, // Disable DAVE E2EE to avoid decryption issues
     });
 
     // Store connection
@@ -107,15 +117,29 @@ async function handleJoinCommand(interaction: CommandInteraction) {
       console.log(`▶️ Player started playing for guild ${interaction.guildId}`);
     });
 
-    player.on(AudioPlayerStatus.Idle, () => {
-      console.log(`⏹️ Player went idle in guild ${interaction.guildId}`);
-    });
+    // Note: AudioPlayerStatus.Idle is handled in setupVoiceReceiver for speaker lock release
 
     // Start listening to voice
     setupVoiceReceiver(connection, player, interaction.guildId!);
 
+    // Connect to Gemini Live API (persistent session for this guild)
+    try {
+      const geminiSession = await getGeminiSession(interaction.guildId!, {
+        systemInstruction: "You are a helpful and friendly AI voice companion in a Discord voice channel. Your name is \"Bini\". Keep responses concise and conversational.",
+      });
+      geminiSessions.set(interaction.guildId!, geminiSession);
+      conversationStates.set(interaction.guildId!, 'IDLE'); // Initialize state
+      console.log(`🧠 Gemini session established for guild ${interaction.guildId}`);
+    } catch (error) {
+      console.error("Failed to connect to Gemini:", error);
+      await interaction.editReply(
+        `✅ Joined ${voiceChannel.name}! ⚠️ But failed to connect to Live API.`
+      );
+      return;
+    }
+
     await interaction.editReply(
-      `✅ Joined ${voiceChannel.name}! Ready for real-time streaming.`
+      `✅ Joined ${voiceChannel.name}! Ready for voice conversation!`
     );
   } catch (error) {
     console.error("Error joining voice channel:", error);
@@ -139,16 +163,26 @@ async function handleLeaveCommand(interaction: CommandInteraction) {
   connections.delete(guildId);
   players.delete(guildId);
 
-  // Cleanup active streams if any
+  // Cleanup Gemini session
+  destroyGeminiSession(guildId);
+  geminiSessions.delete(guildId);
+
+  // Cleanup active streams and pipelines if any
   const stream = activeStreams.get(guildId);
   if (stream) stream.destroy();
   activeStreams.delete(guildId);
+  
+  const pipeline = activePipelines.get(guildId);
+  if (pipeline) pipeline.destroy();
+  activePipelines.delete(guildId);
+  
   activeSpeakers.delete(guildId);
+  conversationStates.delete(guildId);
 
   await interaction.editReply("✅ Left the voice channel!");
 }
 
-// Set up voice receiver to listen and repeat
+// Set up voice receiver to listen and stream to Gemini
 function setupVoiceReceiver(
   connection: VoiceConnection,
   player: AudioPlayer,
@@ -156,21 +190,69 @@ function setupVoiceReceiver(
 ) {
   const receiver = connection.receiver;
 
-  receiver.speaking.on("start", (userId) => {
+  // Clean up resources when player goes idle (finished playing Gemini response)
+  player.on(AudioPlayerStatus.Idle, () => {
+    const currentState = conversationStates.get(guildId);
+    console.log(`🔄 Player idle - current state: ${currentState}`);
+    
+    // Only clean up if we were in PLAYING state
+    if (currentState === 'PLAYING') {
+      console.log(`🔄 Player finished playing - ready for next interaction`);
+      
+      // Destroy the old pipeline stream to clean up event listeners
+      const oldPipeline = activePipelines.get(guildId);
+      if (oldPipeline) {
+        oldPipeline.destroy();
+        activePipelines.delete(guildId);
+        console.log(`🧹 Destroyed old pipeline for guild ${guildId}`);
+      }
+      
+      // Destroy old opus stream
+      const oldStream = activeStreams.get(guildId);
+      if (oldStream) {
+        try { oldStream.destroy(); } catch (e) { /* ignore */ }
+        activeStreams.delete(guildId);
+      }
+      
+      activeSpeakers.delete(guildId);
+      conversationStates.set(guildId, 'IDLE');
+      console.log(`✅ State -> IDLE - ready for new conversation`);
+    }
+  });
+  
+  // Track when player starts playing
+  player.on(AudioPlayerStatus.Playing, () => {
+    const currentState = conversationStates.get(guildId);
+    if (currentState === 'WAITING_FOR_RESPONSE') {
+      conversationStates.set(guildId, 'PLAYING');
+      console.log(`🔊 State -> PLAYING (Gemini is responding)`);
+    }
+  });
+
+  receiver.speaking.on("start", async (userId) => {
     // Ignore bot itself
     if (userId === client.user?.id) return;
 
-    // Speaker lock: Ignore if someone else is already speaking
-    if (activeSpeakers.has(guildId)) {
-      // If it's not the same user, ignore.
-      if (activeSpeakers.get(guildId) !== userId) return;
+    const currentState = conversationStates.get(guildId) || 'IDLE';
+    console.log(`🎤 Speaking start event - user: ${userId}, state: ${currentState}`);
 
-      // If it IS the same user, we check if we already have a stream.
-      if (activeStreams.has(guildId)) return;
+    // Only accept new speech in IDLE state
+    if (currentState !== 'IDLE') {
+      console.log(`⏳ Ignoring speech - not in IDLE state (current: ${currentState})`);
+      return;
     }
 
-    console.log(`🎤 User ${userId} started speaking`);
+    // Get the persistent Gemini session
+    const geminiSession = geminiSessions.get(guildId);
+    if (!geminiSession || !geminiSession.connected) {
+      console.warn(`🧠 No active Gemini session for guild ${guildId}`);
+      return;
+    }
+
+    console.log(`🎤 User ${userId} started speaking - setting up pipeline`);
     activeSpeakers.set(guildId, userId);
+    conversationStates.set(guildId, 'LISTENING');
+    console.log(`🎧 State -> LISTENING`);
 
     // Subscribe with Manual behavior (no auto-timeout)
     const opusStream = receiver.subscribe(userId, {
@@ -181,8 +263,9 @@ function setupVoiceReceiver(
 
     activeStreams.set(guildId, opusStream);
 
-    // Build the pipeline
-    const pipelineStream = createVoicePipeline(opusStream);
+    // Build the pipeline with persistent Gemini session
+    const pipelineStream = createVoicePipeline(opusStream, geminiSession);
+    activePipelines.set(guildId, pipelineStream); // Track pipeline for cleanup
 
     // Create resource
     const resource = createAudioResource(pipelineStream, {
@@ -202,13 +285,25 @@ function setupVoiceReceiver(
       console.error(`Error in pipeline stream for ${userId}:`, error);
       releaseSpeaker(guildId, userId);
     });
+
+    // When pipeline ends (Gemini finished responding), clean up
+    pipelineStream.on("end", () => {
+      console.log(`📤 Pipeline ended for ${userId}`);
+    });
   });
 
   receiver.speaking.on("end", (userId) => {
-    // If the active speaker stops, we unlock
-    if (activeSpeakers.get(guildId) === userId) {
-      console.log(`User ${userId} stopped speaking`);
-      releaseSpeaker(guildId, userId);
+    if (activeSpeakers.get(guildId) !== userId) return;
+    
+    const currentState = conversationStates.get(guildId);
+    console.log(`🎤 User ${userId} stopped speaking - state: ${currentState}`);
+    
+    if (currentState === 'LISTENING') {
+      conversationStates.set(guildId, 'WAITING_FOR_RESPONSE');
+      console.log(`⏳ State -> WAITING_FOR_RESPONSE (Gemini processing...)`);
+      
+      // Important: Don't destroy the stream yet - let Gemini process the buffered audio
+      // The silence after speech helps Gemini's VAD detect end of utterance
     }
   });
 }
@@ -232,15 +327,18 @@ function releaseSpeaker(guildId: string, userId: string) {
 client.on("voiceStateUpdate", (oldState: VoiceState, newState: VoiceState) => {
   // If bot was disconnected
   if (oldState.member?.id === client.user?.id && !newState.channelId) {
-    const connection = connections.get(oldState.guild.id);
+    const guildId = oldState.guild.id;
+    const connection = connections.get(guildId);
     if (connection) {
       connection.destroy();
-      connections.delete(oldState.guild.id);
-      players.delete(oldState.guild.id);
-      releaseSpeaker(
-        oldState.guild.id,
-        activeSpeakers.get(oldState.guild.id) || ""
-      );
+      connections.delete(guildId);
+      players.delete(guildId);
+      
+      // Cleanup Gemini session
+      destroyGeminiSession(guildId);
+      geminiSessions.delete(guildId);
+      
+      releaseSpeaker(guildId, activeSpeakers.get(guildId) || "");
     }
   }
 });
