@@ -1,35 +1,29 @@
-import prism from "prism-media";
 import { Readable } from "stream";
-import { geminiLiveMock } from "../gemini/GeminiLiveMock";
-
-export const AUDIO_CONFIG = {
-  rate: 48000,
-  channels: 2,
-  frameSize: 960,
-};
+import {
+  downmixStereoToMono,
+  upmixMonoToStereo,
+  downsample48to16,
+  upsample24to48,
+} from "./dsp";
+import { opusDecoder } from "./opusDecoder";
+import { opusEncoder } from "./opusEncoder";
+import { geminiLiveStream } from "../gemini/GeminiLiveStream";
+import { GeminiLiveSession } from "../gemini/GeminiLiveSession";
 
 /**
  * Creates a real-time voice pipeline:
- * Opus → PCM → Gemini → PCM → Opus
- *
- * DO NOT BUFFER AUDIO.
+ * Discord Opus (48k stereo) → Opus Decoder → PCM 48k stereo → Downmix (stereo → mono) → PCM 48k mono → Downsample (48k → 16k) → PCM 16k mono → Gemini Live → PCM 24k mono → Upsample (24k → 48k) → PCM 48k mono → Upmix (mono → stereo) → PCM 48k stereo → Opus Encoder → Discord Voice
  */
-export function createVoicePipeline(opusStream: Readable): Readable {
-  const decoder = new prism.opus.Decoder({
-    rate: AUDIO_CONFIG.rate,
-    channels: AUDIO_CONFIG.channels,
-    frameSize: AUDIO_CONFIG.frameSize,
-  });
-
-  const encoder = new prism.opus.Encoder({
-    rate: AUDIO_CONFIG.rate,
-    channels: AUDIO_CONFIG.channels,
-    frameSize: AUDIO_CONFIG.frameSize,
-  });
-
-  decoder.on("data", (pcm) => {
-    console.log("🔊 PCM flowing:", pcm.length);
-  });
-
-  return opusStream.pipe(decoder).pipe(geminiLiveMock()).pipe(encoder);
+export function createVoicePipeline(
+  opusStream: Readable,
+  geminiSession: GeminiLiveSession
+): Readable {
+  return opusStream
+    .pipe(opusDecoder())
+    .pipe(downmixStereoToMono())
+    .pipe(downsample48to16())
+    .pipe(geminiLiveStream(geminiSession))
+    .pipe(upsample24to48())
+    .pipe(upmixMonoToStereo())
+    .pipe(opusEncoder());
 }
