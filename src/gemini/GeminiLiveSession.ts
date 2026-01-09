@@ -46,7 +46,12 @@ export class GeminiLiveSession extends EventEmitter {
         model: MODEL,
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: this.config.systemInstruction || "You are a helpful and friendly AI assistant, your name is \"Bini.\" Keep responses concise and conversational.",
+          thinkingConfig: {
+            thinkingBudget: 0,
+          },
+          systemInstruction:
+            this.config.systemInstruction ||
+            'You are a helpful and friendly AI assistant, your name is "Bini." Keep responses concise and conversational.', 
         },
         callbacks: {
           onopen: () => {
@@ -62,7 +67,10 @@ export class GeminiLiveSession extends EventEmitter {
             this.emit("error", error);
           },
           onclose: (event: any) => {
-            console.log("🧠 Gemini Live API connection closed:", event?.reason || "Unknown reason");
+            console.log(
+              "🧠 Gemini Live API connection closed:",
+              event?.reason || "Unknown reason"
+            );
             this.isConnected = false;
             this.session = null;
             this.emit("disconnected");
@@ -137,7 +145,7 @@ export class GeminiLiveSession extends EventEmitter {
    * @param pcmData - 16-bit PCM, 16kHz, mono audio buffer
    */
   private audioChunkCount = 0;
-  
+
   sendAudio(pcmData: Buffer): void {
     if (!this.session || !this.isConnected) {
       console.warn("🧠 Cannot send audio - not connected");
@@ -154,11 +162,13 @@ export class GeminiLiveSession extends EventEmitter {
           mimeType: `audio/pcm;rate=${GEMINI_INPUT_AUDIO_CONFIG.rate}`,
         },
       });
-      
+
       // Log every 50 chunks (about 1 second of audio) to reduce noise
       this.audioChunkCount++;
       if (this.audioChunkCount % 50 === 0) {
-        console.log(`📡 Gemini WebSocket: sent ${this.audioChunkCount} audio chunks`);
+        console.log(
+          `📡 Gemini WebSocket: sent ${this.audioChunkCount} audio chunks`
+        );
       }
     } catch (error) {
       console.error("🧠 Error sending audio to Gemini:", error);
@@ -193,15 +203,18 @@ const sessions = new Map<string, GeminiLiveSession>();
 /**
  * Get or create a Gemini Live session for a guild
  */
-export async function getGeminiSession(guildId: string, config?: GeminiLiveSessionConfig): Promise<GeminiLiveSession> {
+export async function getGeminiSession(
+  guildId: string,
+  config?: GeminiLiveSessionConfig
+): Promise<GeminiLiveSession> {
   let session = sessions.get(guildId);
-  
+
   if (!session || !session.connected) {
     session = new GeminiLiveSession(config);
     sessions.set(guildId, session);
     await session.connect();
   }
-  
+
   return session;
 }
 

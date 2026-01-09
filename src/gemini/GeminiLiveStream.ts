@@ -1,13 +1,16 @@
 import { Duplex } from "stream";
 import { GeminiLiveSession } from "./GeminiLiveSession";
-import { GEMINI_INPUT_AUDIO_CONFIG, GEMINI_OUTPUT_AUDIO_CONFIG } from "../audio/audio.constants";
+import {
+  GEMINI_INPUT_AUDIO_CONFIG,
+  GEMINI_OUTPUT_AUDIO_CONFIG,
+} from "../audio/audio.constants";
 
 /**
  * Creates a Duplex stream that interfaces with a Gemini Live session.
- * 
+ *
  * Input: 16-bit PCM, 16kHz, mono (from Discord pipeline)
  * Output: 16-bit PCM, 24kHz, mono (from Gemini)
- * 
+ *
  * The session must already be connected before creating this stream.
  */
 export function geminiLiveStream(session: GeminiLiveSession): Duplex {
@@ -80,4 +83,3 @@ export function geminiLiveStream(session: GeminiLiveSession): Duplex {
 
   return stream;
 }
-

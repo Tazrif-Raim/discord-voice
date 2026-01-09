@@ -1,5 +1,5 @@
 import prism from "prism-media";
-import { DISCORD_AUDIO_CONFIG } from './audio.constants';
+import { DISCORD_AUDIO_CONFIG } from "./audio.constants";
 
 export function opusEncoder() {
   return new prism.opus.Encoder({

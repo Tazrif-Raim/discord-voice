@@ -6,7 +6,6 @@ A Discord bot that can join voice channels, listen to users, and respond using G
 
 - ✅ Join voice channels with `/join` command
 - ✅ Leave voice channels with `/leave` command
-- ✅ Listen to voice and repeat it back (echo bot)
 - ✅ AI voice agent integration using Gemini Live Native Audio
 
 ## Setup
