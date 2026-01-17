@@ -1,13 +1,13 @@
 {
   "name": "discord-voice",
   "version": "1.0.0",
-  "main": "dist/index.js",
+  "main": "dist/src/index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "ts-node index.ts",
+    "start": "ts-node src/index.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start:prod": "node dist/index.js"
+    "start:prod": "node dist/src/index.js"
   },
   "keywords": [],
   "author": "",
@@ -30,6 +30,5 @@
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
-  },
-  "type": "module"
+  }
 }
